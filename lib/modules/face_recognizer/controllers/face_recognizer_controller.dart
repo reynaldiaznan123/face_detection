@@ -12,8 +12,6 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 import '../../../root/models/camera_model.dart';
 import '../services/ml_vision_service.dart';
 
-final List<FaceDetector> _detectors = [];
-
 final Map<String, List> _data = {};
 
 class FaceRecognizerController extends GetxController {
@@ -22,6 +20,13 @@ class FaceRecognizerController extends GetxController {
   final CameraModel _cameraModel = Get.find<CameraModel>();
   Interpreter? _interpreter;
   final _mlVisionService = MlVisionService();
+  FaceDetector _faceDetector = FaceDetector(
+    options: FaceDetectorOptions(
+      enableContours: true,
+      enableClassification: true,
+      performanceMode: FaceDetectorMode.accurate,
+    ),
+  );
   final double _threshold = 1.0;
 
   List _face = [];
@@ -89,55 +94,67 @@ class FaceRecognizerController extends GetxController {
       _create();
     }
 
-    final InputImageRotation rotation = _rotation(
-      _camera.sensorOrientation,
-    );
-    final Map<String, Face> result = {};
-    _streamSubscription = _streamController?.stream.listen((image) async {
-      try {
-        final List<Face> faces = await _detect(image, rotation);
-
-        imglib.Image converted = _mlVisionService.convertCameraImage(
-          image,
-          CameraLensDirection.front,
-        );
-
-        for (Face face in faces) {
-          double x, y, w, h;
-
-          x = face.boundingBox.left - 10;
-          y = face.boundingBox.top - 10;
-          w = face.boundingBox.width + 10;
-          h = face.boundingBox.height + 10;
-
-          imglib.Image cropped = imglib.copyCrop(
-            converted,
-            x.round(),
-            y.round(),
-            w.round(),
-            h.round(),
-          );
-          cropped = imglib.copyResizeCropSquare(cropped, 112);
-
-          final String output = _recognition(cropped);
-          if (output != '') {
-            result[output] = face;
-          }
-        }
-
-        if (result.isNotEmpty) {
-          _result = result;
+    if (_streamSubscription == null) {
+      final InputImageRotation rotation = _rotation(
+        _camera.sensorOrientation,
+      );
+      final Map<String, Face> result = {};
+      _streamSubscription = _streamController?.stream.listen((image) async {
+        if (started == false) {
+          started = true;
 
           update();
         }
-      } catch (_) {
-        Get.back();
-      }
-    });
+
+        try {
+          final List<Face> faces = await _detect(image, rotation);
+
+          imglib.Image converted = _mlVisionService.convertCameraImage(
+            image,
+            CameraLensDirection.front,
+          );
+
+          for (Face face in faces) {
+            double x, y, w, h;
+
+            x = face.boundingBox.left - 10;
+            y = face.boundingBox.top - 10;
+            w = face.boundingBox.width + 10;
+            h = face.boundingBox.height + 10;
+
+            imglib.Image cropped = imglib.copyCrop(
+              converted,
+              x.round(),
+              y.round(),
+              w.round(),
+              h.round(),
+            );
+            cropped = imglib.copyResizeCropSquare(cropped, 112);
+
+            final String output = _recognition(cropped);
+            if (output != '') {
+              result[output] = face;
+            }
+          }
+
+          if (result.isNotEmpty) {
+            _result = result;
+
+            update();
+          }
+        } catch (_) {
+          Get.back();
+        }
+      });
+    }
 
     // Memulai mengaktifkan kamera
     _cameraController?.startImageStream((image) async {
       if (started == false) {
+        _detector();
+
+        await _cameraController?.resumePreview();
+
         started = true;
 
         update();
@@ -151,16 +168,8 @@ class FaceRecognizerController extends GetxController {
 
   stop() async {
     await _cameraController?.stopImageStream();
-    await _streamSubscription?.cancel();
-    await _streamController?.close();
-
-    for (FaceDetector detector in _detectors) {
-      detector.close();
-
-      _detectors.removeWhere((element) {
-        return element.id == detector.id;
-      });
-    }
+    await _cameraController?.pausePreview();
+    await _faceDetector.close();
 
     started = false;
 
@@ -186,14 +195,7 @@ class FaceRecognizerController extends GetxController {
     _mlVisionService.dispose();
     _interpreter?.close();
     _streamController?.close();
-
-    for (FaceDetector detector in _detectors) {
-      detector.close();
-
-      _detectors.removeWhere((element) {
-        return element.id == detector.id;
-      });
-    }
+    _faceDetector.close();
 
     _cameraController = null;
     _interpreter = null;
@@ -207,6 +209,16 @@ class FaceRecognizerController extends GetxController {
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
     _streamController = StreamController();
+  }
+
+  _detector() {
+    _faceDetector = FaceDetector(
+      options: FaceDetectorOptions(
+        enableContours: true,
+        enableClassification: true,
+        performanceMode: FaceDetectorMode.accurate,
+      ),
+    );
   }
 
   Future<List<Face>> _detect(
@@ -235,15 +247,8 @@ class FaceRecognizerController extends GetxController {
           );
         }).toList(),
       );
-      final FaceDetector detector = FaceDetector(
-        options: FaceDetectorOptions(
-          enableContours: true,
-          enableClassification: true,
-          performanceMode: FaceDetectorMode.accurate,
-        ),
-      );
 
-      final List<Face> faces = await detector.processImage(
+      final List<Face> faces = await _faceDetector.processImage(
         InputImage.fromBytes(
           bytes: bytes,
           inputImageData: data,
